@@ -183,11 +183,22 @@ require (
 
 ## 8. Testing
 
-- [ ] Basic insert/update tests
-- [ ] Filter query tests
-- [ ] JSONB type tests
-- [ ] Link/JOIN tests
-- [ ] Pool stats tests
+- [x] Basic insert/update tests
+- [x] Filter query tests
+- [x] JSONB type tests
+- [x] Link/JOIN tests
+- [x] Pool stats tests
+
+**All tests passing (7/7):**
+- TestAIModelInsertAndFetch - Insert and fetch by UUID
+- TestListAIModel - Pagination with filters and sorting
+- TestLinkedFields - LEFT JOIN with nested struct scanning
+- TestQueryBuilderWhereAndJoin - Complex query builder with WHERE + JOIN
+- TestFilters - $in operator with array values
+- TestUpdate - Update existing records
+- TestPoolStats - Connection pool metrics
+
+Run tests: `./test.sh` or `go test`
 
 ---
 
