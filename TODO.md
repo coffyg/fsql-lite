@@ -4,22 +4,22 @@
 
 ## 1. Core Connection Management (`fsql.go`)
 
-- [ ] **Global DB variable** - `var DB *pgxpool.Pool`
-- [ ] **InitDB function** - Direct pgxpool.NewWithConfig
+- [x] **Global DB variable** - `var DB *pgxpool.Pool`
+- [x] **InitDB function** - Direct pgxpool.NewWithConfig
   - ParseConfig from URL
   - Set MaxConns/MinConns
   - QueryExecModeSimpleProtocol
   - StatementCacheCapacity = 0
   - Ping to verify connection
-- [ ] **CloseDB function** - Clean shutdown
-- [ ] **GetPoolStats function** - Return pgxpool.Stat() metrics
+- [x] **CloseDB function** - Clean shutdown
+- [x] **GetPoolStats function** - Return pgxpool.Stat() metrics
   - TotalConns, AcquiredConns, IdleConns
-  - EmptyAcquireCount, EmptyAcquireWaitTime
+  - EmptyAcquireCount, AcquireDuration
 
 ## 2. ORM Layer - Struct Tags (`orm.go` + `cache.go`)
 
 ### Struct Tag Parsing
-- [ ] **InitModelTagCache(model interface{}, tableName string)**
+- [x] **InitModelTagCache(model interface{}, tableName string)** - Copied from fsql
   - Parse struct tags: `db:"column"` `dbMode:"i,u,s,l"` `dbInsertValue:"NOW()"`
   - Cache struct metadata globally
   - Support mode flags:
@@ -30,37 +30,37 @@
   - Store default insert values
 
 ### Query Generation
-- [ ] **GetInsertQuery(tableName string, valuesMap map[string]interface{}, returning string) (string, []interface{})**
+- [x] **GetInsertQuery(tableName string, valuesMap map[string]interface{}, returning string) (string, []interface{})** - Copied from fsql
   - Generate INSERT query from struct metadata
   - Support JSONB type detection and `::jsonb` casting
   - Handle default values (NOW(), NULL, true, false, DEFAULT)
   - Support RETURNING clause
 
-- [ ] **GetUpdateQuery(tableName string, valuesMap map[string]interface{}, returning string) (string, []interface{})**
+- [x] **GetUpdateQuery(tableName string, valuesMap map[string]interface{}, returning string) (string, []interface{})** - Copied from fsql
   - Generate UPDATE query with WHERE on returning field (uuid)
   - Support JSONB type detection and `::jsonb` casting
   - Return RETURNING clause
 
 ### Field Helpers
-- [ ] **GetSelectFields(tableName, aliasTableName string) ([]string, []string)**
+- [x] **GetSelectFields(tableName, aliasTableName string) ([]string, []string)** - Copied from fsql
   - Return field list for SELECT queries
   - Support table aliases for JOINs
   - Return (fieldStrings, fieldNames)
 
-- [ ] **GetInsertFields(tableName string) ([]string, []string)**
+- [x] **GetInsertFields(tableName string) ([]string, []string)** - Copied from fsql
   - Return insert field list
 
-- [ ] **GetUpdateFields(tableName string) ([]string, []string)**
+- [x] **GetUpdateFields(tableName string) ([]string, []string)** - Copied from fsql
   - Return update field list
 
 ### JSONB Support
-- [ ] **isJSONBType(val interface{}) bool**
+- [x] **isJSONBType(val interface{}) bool** - Copied from fsql
   - Check if value implements driver.Valuer
   - Detect LocalizedText, Dictionary types
   - Return true if should be cast as ::jsonb
 
 ### Link System
-- [ ] **Store linked fields** in model metadata
+- [x] **Store linked fields** in model metadata - Copied from fsql
   - Map FieldName → TableAlias
   - Used for JOIN query building
 
@@ -73,34 +73,37 @@ type Sort map[string]string
 ```
 
 ### Operators Support
-- [ ] **Basic operators:**
+- [x] **Basic operators:** - Copied from fsql, adapted for pgx
   - `$eq` or default (empty) = equals
   - `$ne` = not equals
   - `$gt`, `$gte`, `$lt`, `$lte` = comparisons
-  - `$in`, `$nin` = array operations (use pgx arrays)
+  - `$in`, `$nin` = array operations (pgx handles arrays natively)
 
-- [ ] **String operators:**
+- [x] **String operators:** - Copied from fsql
   - `$like` = LIKE pattern
   - `$prefix` = LIKE 'value%'
   - `$suffix` = LIKE '%value'
 
-- [ ] **Case-insensitive (€ prefix):**
+- [x] **Case-insensitive (€ prefix):** - Copied from fsql
   - `€eq`, `€like`, `€prefix`, `€suffix`
   - Use LOWER() on both sides
 
 ### Filter Query Building
-- [ ] **FilterQuery(baseQuery, t string, filters *Filter, sort *Sort, table string, perPage, page int) (string, []interface{}, error)**
+- [x] **FilterQuery(baseQuery, t string, filters *Filter, sort *Sort, table string, perPage, page int) (string, []interface{}, error)** - Copied from fsql
   - Build WHERE clause from filters
   - Build ORDER BY from sort map
   - Add LIMIT/OFFSET for pagination
   - Return (query, args, error)
 
-- [ ] **BuildFilterCount(baseQuery string) string**
+- [x] **BuildFilterCount(baseQuery string) string** - Copied from fsql
   - Strip LIMIT/OFFSET/ORDER BY
   - Wrap in SELECT COUNT(*) FROM (...)
   - Return count query
 
-- [ ] **constructConditions(t string, filters *Filter, table string) ([]string, []interface{}, error)**
+- [x] **GetFilterCount(query string, args []interface{}) (int, error)** - Adapted for pgx
+  - Uses DB.QueryRow(context.Background(), ...) instead of sqlx
+
+- [x] **constructConditions(t string, filters *Filter, table string) ([]string, []interface{}, error)** - Copied from fsql
   - Parse filter map into WHERE conditions
   - Handle operators and build placeholders
   - Return conditions and args
