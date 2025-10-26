@@ -111,51 +111,64 @@ type Sort map[string]string
 ## 4. Query Execution Helpers (`query.go`)
 
 ### Direct pgxpool execution
-- [ ] **Insert(ctx context.Context, tableName string, values map[string]interface{}, returning string) error**
+- [x] **Insert(ctx context.Context, tableName string, values map[string]interface{}, returning string) error**
   - Call GetInsertQuery
-  - Execute with DB.QueryRow(ctx, query, args...)
-  - Scan RETURNING value
+  - Execute with DB.QueryRow(ctx, query, args...) or DB.Exec
+  - Scan RETURNING value into values map
 
-- [ ] **Update(ctx context.Context, tableName string, values map[string]interface{}, returning string) error**
+- [x] **Update(ctx context.Context, tableName string, values map[string]interface{}, returning string) error**
   - Call GetUpdateQuery
-  - Execute with DB.QueryRow(ctx, query, args...)
-  - Scan RETURNING value
+  - Execute with DB.QueryRow(ctx, query, args...) or DB.Exec
+  - Scan RETURNING value into values map
 
-- [ ] **SelectOne(ctx context.Context, dest interface{}, query string, args ...interface{}) error**
-  - Execute query
-  - Scan single row into dest
+- [x] **SelectOne(ctx context.Context, dest interface{}, query string, args ...interface{}) error**
+  - Execute query with DB.Query
+  - Scan single row into dest using StructScan
 
-- [ ] **SelectMany(ctx context.Context, dest interface{}, query string, args ...interface{}) error**
-  - Execute query
-  - Scan multiple rows into slice
+- [x] **SelectMany(ctx context.Context, dest interface{}, query string, args ...interface{}) error**
+  - Execute query with DB.Query
+  - Scan multiple rows into slice using StructsScan
+
+- [x] **Exec(ctx context.Context, query string, args ...interface{}) error**
+  - Execute query without returning rows
 
 ## 5. Query Builder (`builder.go`)
 
-- [ ] **SelectBase(table string) *QueryBuilder**
+- [x] **SelectBase(table string) *QueryBuilder** - Already in orm.go
   - Fluent query builder for SELECT with JOINs
 
-- [ ] **QueryBuilder.Where(condition string) *QueryBuilder**
+- [x] **QueryBuilder.Where(condition string) *QueryBuilder** - Already in orm.go
   - Add WHERE conditions
 
-- [ ] **QueryBuilder.Join/Left(table, alias, on string) *QueryBuilder**
+- [x] **QueryBuilder.Join/Left(table, alias, on string) *QueryBuilder** - Already in orm.go
   - Add JOIN clauses
 
-- [ ] **QueryBuilder.Build() string**
+- [x] **QueryBuilder.Build() string** - Already in orm.go
   - Generate final SELECT query with all fields from base and joined tables
 
 ## 6. Supporting Code
 
 ### Utils
-- [ ] **extractTableName(query string) string**
+- [x] **extractTableName(query string) string** - Stub in fsql.go (copy from fsql if needed)
   - Extract table name from SQL query for logging
 
-- [ ] **GenNewUUID(table string) string**
+- [x] **GenNewUUID(table string) string** - Already in orm.go
   - Generate UUID for new records
 
 ### Scanner (`scanner.go`)
-- [ ] **Row/Rows scanning helpers** for pgx
-  - Map pgx.Rows to struct fields
-  - Handle nested structs for linked fields
+- [x] **StructScan(rows pgx.Rows, dest interface{}) error**
+  - Scan single row from pgx.Rows into struct using db tags
+  - Note: Only works with Rows, not Row from QueryRow
+
+- [x] **StructsScan(rows pgx.Rows, dest interface{}) error**
+  - Map pgx.Rows to slice of structs using db tags
+  - Handles both value and pointer slice elements
+
+- [x] **Get(dest interface{}, query string, args ...interface{}) error**
+  - Helper for scanning single row
+
+- [x] **Select(dest interface{}, query string, args ...interface{}) error**
+  - Helper for scanning multiple rows
 
 ## 7. go.mod Setup
 
