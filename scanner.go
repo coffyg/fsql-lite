@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -30,16 +31,45 @@ func StructScan(rows pgx.Rows, dest interface{}) error {
 		return fmt.Errorf("no field descriptions available")
 	}
 
-	// Build column name to field mapping
+	// Build column name to field mapping (including nested structs for linked fields)
 	columnMap := make(map[string]reflect.Value, len(fieldDescriptions))
 	destType := destValue.Type()
 
 	for i := 0; i < destValue.NumField(); i++ {
 		field := destType.Field(i)
 		dbTag := field.Tag.Get("db")
+		dbMode := field.Tag.Get("dbMode")
 
-		if dbTag != "" && dbTag != "-" {
-			// Map column name to field
+		if dbTag == "" || dbTag == "-" {
+			continue
+		}
+
+		// Check if this is a linked field
+		if strings.Contains(dbMode, "l") {
+			// This is a pointer to a nested struct
+			fieldValue := destValue.Field(i)
+
+			// Initialize if nil
+			if fieldValue.IsNil() {
+				fieldValue.Set(reflect.New(fieldValue.Type().Elem()))
+			}
+
+			// Map nested struct fields with prefix
+			nestedValue := fieldValue.Elem()
+			nestedType := nestedValue.Type()
+
+			for j := 0; j < nestedValue.NumField(); j++ {
+				nestedField := nestedType.Field(j)
+				nestedDbTag := nestedField.Tag.Get("db")
+
+				if nestedDbTag != "" && nestedDbTag != "-" {
+					// Column name is "prefix.fieldname"
+					columnName := dbTag + "." + nestedDbTag
+					columnMap[columnName] = nestedValue.Field(j)
+				}
+			}
+		} else {
+			// Regular field
 			columnMap[dbTag] = destValue.Field(i)
 		}
 	}
@@ -102,15 +132,46 @@ func StructsScan(rows pgx.Rows, dest interface{}) error {
 		return nil // No fields, nothing to scan
 	}
 
-	// Build column name to field index mapping using the element type
-	columnToFieldIndex := make(map[string]int, len(fieldDescriptions))
+	// Build column name to field index mapping (including nested linked fields)
+	type fieldMapping struct {
+		indices      []int // Field indices path
+		isLinked     bool
+		linkedPrefix string
+	}
+	columnToFieldMap := make(map[string]fieldMapping, len(fieldDescriptions))
 
 	for i := 0; i < elemType.NumField(); i++ {
 		field := elemType.Field(i)
 		dbTag := field.Tag.Get("db")
+		dbMode := field.Tag.Get("dbMode")
 
-		if dbTag != "" && dbTag != "-" {
-			columnToFieldIndex[dbTag] = i
+		if dbTag == "" || dbTag == "-" {
+			continue
+		}
+
+		// Check if this is a linked field
+		if strings.Contains(dbMode, "l") {
+			// Map nested fields
+			nestedType := field.Type.Elem() // Get struct type from pointer
+			for j := 0; j < nestedType.NumField(); j++ {
+				nestedField := nestedType.Field(j)
+				nestedDbTag := nestedField.Tag.Get("db")
+
+				if nestedDbTag != "" && nestedDbTag != "-" {
+					columnName := dbTag + "." + nestedDbTag
+					columnToFieldMap[columnName] = fieldMapping{
+						indices:      []int{i, j},
+						isLinked:     true,
+						linkedPrefix: dbTag,
+					}
+				}
+			}
+		} else {
+			// Regular field
+			columnToFieldMap[dbTag] = fieldMapping{
+				indices:  []int{i},
+				isLinked: false,
+			}
 		}
 	}
 
@@ -124,13 +185,30 @@ func StructsScan(rows pgx.Rows, dest interface{}) error {
 		for i, fd := range fieldDescriptions {
 			columnName := string(fd.Name)
 
-			if fieldIndex, exists := columnToFieldIndex[columnName]; exists {
-				fieldValue := elemValue.Field(fieldIndex)
-				if fieldValue.CanSet() {
-					scanTargets[i] = fieldValue.Addr().Interface()
+			if mapping, exists := columnToFieldMap[columnName]; exists {
+				if mapping.isLinked {
+					// Initialize linked struct if needed
+					linkedField := elemValue.Field(mapping.indices[0])
+					if linkedField.IsNil() {
+						linkedField.Set(reflect.New(linkedField.Type().Elem()))
+					}
+					// Get the nested field
+					nestedField := linkedField.Elem().Field(mapping.indices[1])
+					if nestedField.CanSet() {
+						scanTargets[i] = nestedField.Addr().Interface()
+					} else {
+						var discard interface{}
+						scanTargets[i] = &discard
+					}
 				} else {
-					var discard interface{}
-					scanTargets[i] = &discard
+					// Regular field
+					fieldValue := elemValue.Field(mapping.indices[0])
+					if fieldValue.CanSet() {
+						scanTargets[i] = fieldValue.Addr().Interface()
+					} else {
+						var discard interface{}
+						scanTargets[i] = &discard
+					}
 				}
 			} else {
 				// Discard unknown columns
