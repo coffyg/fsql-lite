@@ -181,22 +181,61 @@ require (
 )
 ```
 
-## 8. Testing
+## 8. Transaction Support (`transaction.go`) ✅ COMPLETE
 
-- [x] Basic insert/update tests
+### Core Transaction Functions
+- [x] **BeginTx(ctx context.Context) (*Tx, error)**
+  - Start transaction with default options
+- [x] **BeginTxWithOptions(ctx context.Context, opts TxOptions) (*Tx, error)**
+  - Support isolation levels, read-only, deferrable modes
+- [x] **Tx.Commit(ctx context.Context) error**
+  - Commit transaction
+- [x] **Tx.Rollback(ctx context.Context) error**
+  - Rollback transaction
+- [x] **Tx.Exec/Query/QueryRow**
+  - Execute queries within transaction
+
+### Transaction Helpers
+- [x] **WithTx(ctx context.Context, fn TxFn) error**
+  - Execute function within transaction with auto-commit/rollback
+- [x] **WithTxOptions(ctx context.Context, opts TxOptions, fn TxFn) error**
+  - WithTx with custom isolation/options
+- [x] **WithTxRetry(ctx context.Context, fn TxFn) error**
+  - Auto-retry on deadlock/serialization errors
+- [x] **WithReadTx/WithSerializableTx/WithReadCommittedTx**
+  - Convenience wrappers for common isolation levels
+
+### Transaction ORM Functions
+- [x] **InsertWithTx(ctx, tx, tableName, values, returning)**
+  - INSERT within transaction
+- [x] **UpdateWithTx(ctx, tx, tableName, values, where)**
+  - UPDATE within transaction
+
+### Retry Logic
+- [x] **isRetryableError(err error) bool**
+  - Detect deadlock/serialization errors
+  - Exponential backoff with jitter
+  - Configurable max retries
+
+## 9. Testing
+
+- [x] Basic insert/update tests (7 tests)
 - [x] Filter query tests
 - [x] JSONB type tests
 - [x] Link/JOIN tests
 - [x] Pool stats tests
+- [x] **Transaction tests (11 tests):**
+  - TestTransactionCommit - Basic commit
+  - TestTransactionRollback - Basic rollback
+  - TestWithTx - Helper function commit
+  - TestWithTxRollback - Helper function rollback
+  - TestWithTxRetry - Retry on deadlock
+  - TestTransactionIsolationLevels - Read committed/repeatable read/serializable
+  - TestInsertWithTx - INSERT in transaction
+  - TestUpdateWithTx - UPDATE in transaction
+  - TestReadOnlyTransaction - Read-only mode enforcement
 
-**All tests passing (7/7):**
-- TestAIModelInsertAndFetch - Insert and fetch by UUID
-- TestListAIModel - Pagination with filters and sorting
-- TestLinkedFields - LEFT JOIN with nested struct scanning
-- TestQueryBuilderWhereAndJoin - Complex query builder with WHERE + JOIN
-- TestFilters - $in operator with array values
-- TestUpdate - Update existing records
-- TestPoolStats - Connection pool metrics
+**All tests: 18/18 passing**
 
 Run tests: `./test.sh` or `go test`
 
@@ -209,10 +248,10 @@ Run tests: `./test.sh` or `go test`
 - ❌ No sqlx dependency
 - ❌ No read replica support
 - ❌ No health checking
-- ❌ No Safe* wrapper functions
+- ❌ No Safe* wrapper functions (timeout enforcement via context only)
 - ❌ No prepared statement caching
 - ❌ No extensive sync.Pool optimizations
-- ❌ No transaction helpers (use pgxpool.Begin directly)
+- ❌ No batch operations helpers
 
 **What we KEEP:**
 - ✅ Struct tag parsing and caching
@@ -222,6 +261,8 @@ Run tests: `./test.sh` or `go test`
 - ✅ Link support for JOINs
 - ✅ Query builder
 - ✅ Direct pgxpool access
+- ✅ **Transaction support (BeginTx, WithTx, WithTxRetry)**
+- ✅ **Isolation levels and retry logic**
 
 **Benefits:**
 - Timeouts work correctly (context controls actual connection acquisition)
