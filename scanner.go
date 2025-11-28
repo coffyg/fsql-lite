@@ -129,7 +129,7 @@ func scanSlice(rows pgx.Rows, slice reflect.Value, columns []string) error {
 
 // scanSingle scans a single row into a struct
 func scanSingle(rows pgx.Rows, dest reflect.Value, columns []string) error {
-	// Handle primitives
+	// Handle primitives (non-structs)
 	if dest.Kind() != reflect.Struct {
 		if !rows.Next() {
 			if err := rows.Err(); err != nil {
@@ -138,6 +138,19 @@ func scanSingle(rows pgx.Rows, dest reflect.Value, columns []string) error {
 			return sql.ErrNoRows
 		}
 		return rows.Scan(dest.Addr().Interface())
+	}
+
+	// Handle sql.Scanner types (like sql.NullInt64, sql.NullString, etc.)
+	// These are structs but should be scanned directly, not via field mapping
+	if scanner, ok := dest.Addr().Interface().(sql.Scanner); ok {
+		if !rows.Next() {
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			return sql.ErrNoRows
+		}
+		// Use pgx's scan which will call the Scanner interface
+		return rows.Scan(scanner)
 	}
 
 	if !rows.Next() {

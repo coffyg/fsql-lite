@@ -36,3 +36,24 @@ CREATE TABLE website (
     realm_uuid UUID REFERENCES realm(uuid)
 );
 
+CREATE TABLE user_profile (
+    uuid UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    username TEXT NOT NULL,
+    bio TEXT,
+    user_experience INTEGER NOT NULL DEFAULT 0,
+    follower_count INTEGER NOT NULL DEFAULT 0,
+    following_count INTEGER NOT NULL DEFAULT 0,
+    personas_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE persona (
+    uuid UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_uuid UUID NOT NULL REFERENCES user_profile(uuid),
+    name TEXT NOT NULL,
+    experience INTEGER NOT NULL DEFAULT 0,
+    is_public BOOLEAN NOT NULL DEFAULT false,
+    is_ready BOOLEAN NOT NULL DEFAULT false,
+    is_deleted BOOLEAN NOT NULL DEFAULT false,
+    meili_visible BOOLEAN NOT NULL DEFAULT false
+);
+

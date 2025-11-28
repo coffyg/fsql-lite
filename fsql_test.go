@@ -1,6 +1,7 @@
 package fsql
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -472,4 +473,111 @@ func TestJSONBScanning(t *testing.T) {
 
 	// Clean up
 	_, _ = Db.Exec("DELETE FROM ai_model WHERE uuid = $1", testUUID)
+}
+
+// UserProfile for testing plain int scanning
+type UserProfile struct {
+	UUID           string  `db:"uuid" dbMode:"i"`
+	Username       string  `db:"username" dbMode:"i,u"`
+	Bio            *string `db:"bio" dbMode:"i,u"`
+	UserExperience int     `db:"user_experience" dbMode:"i,u"`
+	FollowerCount  int     `db:"follower_count" dbMode:"i,u"`
+	FollowingCount int     `db:"following_count" dbMode:"i,u"`
+}
+
+// TestPlainIntScanning tests that plain int fields are scanned correctly
+// This reproduces a bug where int fields were returning 0
+func TestPlainIntScanning(t *testing.T) {
+	// Initialize cache
+	InitModelTagCache(UserProfile{}, "user_profile")
+
+	// Clean up
+	_, _ = Db.Exec("DELETE FROM user_profile")
+
+	// Insert a user with non-zero experience
+	var testUUID string
+	err := Db.QueryRow(
+		`INSERT INTO user_profile (uuid, username, bio, user_experience, follower_count, following_count)
+		 VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5) RETURNING uuid`,
+		"testuser", "Test bio", 12345, 100, 50,
+	).Scan(&testUUID)
+	if err != nil {
+		t.Fatalf("Failed to insert test user: %v", err)
+	}
+
+	// Build the query using SelectBase
+	baseQuery := SelectBase("user_profile", "").Build()
+	query := baseQuery + ` WHERE "user_profile".uuid = $1 LIMIT 1`
+
+	// Fetch the user
+	user := UserProfile{}
+	err = Db.Get(&user, query, testUUID)
+	if err != nil {
+		t.Fatalf("Failed to fetch user: %v", err)
+	}
+
+	// Verify int fields are correctly scanned
+	if user.UserExperience != 12345 {
+		t.Errorf("Expected UserExperience=12345, got %d", user.UserExperience)
+	}
+	if user.FollowerCount != 100 {
+		t.Errorf("Expected FollowerCount=100, got %d", user.FollowerCount)
+	}
+	if user.FollowingCount != 50 {
+		t.Errorf("Expected FollowingCount=50, got %d", user.FollowingCount)
+	}
+
+	t.Logf("UserProfile scanned: UUID=%s, Username=%s, XP=%d, Followers=%d, Following=%d",
+		user.UUID, user.Username, user.UserExperience, user.FollowerCount, user.FollowingCount)
+
+	// Clean up
+	_, _ = Db.Exec("DELETE FROM user_profile WHERE uuid = $1", testUUID)
+}
+
+// TestNullInt64Scanning tests scanning COUNT(*) into sql.NullInt64 using SafeGet
+// This mimics the exact Soulkyn pattern for UpdatePersonasCountAndExperience
+func TestNullInt64Scanning(t *testing.T) {
+	cleanDatabase(t)
+
+	// Insert some test ai_models
+	for i := 0; i < 5; i++ {
+		aiModel := AIModel{
+			Key:      fmt.Sprintf("count_test_%d", i),
+			Type:     "llm",
+			Provider: "openai",
+		}
+		err := aiModel.Insert()
+		if err != nil {
+			t.Fatalf("Failed to insert ai_model: %v", err)
+		}
+	}
+
+	// Test SafeGet with COUNT(*) into sql.NullInt64 - EXACT Soulkyn pattern
+	query := "SELECT COUNT(*) FROM ai_model WHERE type = $1"
+	var count sql.NullInt64
+	err := SafeGet(&count, query, "llm")
+	if err != nil {
+		t.Fatalf("SafeGet COUNT failed: %v", err)
+	}
+
+	if !count.Valid {
+		t.Error("Expected count.Valid to be true")
+	}
+	if count.Int64 != 5 {
+		t.Errorf("Expected count=5, got %d", count.Int64)
+	}
+
+	t.Logf("SafeGet COUNT(*) into sql.NullInt64: %d (valid=%v)", count.Int64, count.Valid)
+
+	// Test with no results - should return 0, not error
+	var countZero sql.NullInt64
+	err = SafeGet(&countZero, "SELECT COUNT(*) FROM ai_model WHERE type = $1", "nonexistent")
+	if err != nil {
+		t.Fatalf("SafeGet COUNT with no results failed: %v", err)
+	}
+	if countZero.Int64 != 0 {
+		t.Errorf("Expected count=0, got %d", countZero.Int64)
+	}
+
+	t.Logf("SafeGet COUNT(*) with no matches: %d (valid=%v)", countZero.Int64, countZero.Valid)
 }
