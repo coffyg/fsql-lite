@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
@@ -29,16 +30,16 @@ func (p *pgxScannerWrapper) Scan(value interface{}) error {
 	return p.target.Scan(value)
 }
 
-// Cache for type → column mappings to avoid repeated reflection
-type typeColumnCache struct {
+// traversalCache caches traversals per (type, columns) combination
+type traversalCache struct {
 	traversals [][]int
 	hasScanner []bool // true if field implements sql.Scanner
 }
 
 var (
-	// columnCache maps (type, columns fingerprint) → cached traversals
-	columnCache     = make(map[string]*typeColumnCache)
-	columnCacheLock sync.RWMutex
+	// traversalCacheMap maps "typeName:col1,col2,col3" → cached traversals
+	traversalCacheMap  = make(map[string]*traversalCache)
+	traversalCacheLock sync.RWMutex
 )
 
 // Global mapper using "db" tag (same as sqlx)
@@ -164,8 +165,36 @@ func scanSingle(rows pgx.Rows, dest reflect.Value, columns []string) error {
 	return rows.Err()
 }
 
-// getTraversalsAndScanners gets field traversals and scanner flags for columns
+// getTraversalsAndScanners gets field traversals and scanner flags for columns (cached)
 func getTraversalsAndScanners(tm *reflectx.StructMap, baseType reflect.Type, columns []string) ([][]int, []bool) {
+	// Build cache key: "typeName:col1,col2,col3..."
+	// Using a simple string concatenation for the key
+	keyLen := len(baseType.String()) + 1
+	for _, col := range columns {
+		keyLen += len(col) + 1
+	}
+
+	var keyBuilder strings.Builder
+	keyBuilder.Grow(keyLen)
+	keyBuilder.WriteString(baseType.String())
+	keyBuilder.WriteByte(':')
+	for i, col := range columns {
+		if i > 0 {
+			keyBuilder.WriteByte(',')
+		}
+		keyBuilder.WriteString(col)
+	}
+	cacheKey := keyBuilder.String()
+
+	// Check cache with read lock
+	traversalCacheLock.RLock()
+	if cached, ok := traversalCacheMap[cacheKey]; ok {
+		traversalCacheLock.RUnlock()
+		return cached.traversals, cached.hasScanner
+	}
+	traversalCacheLock.RUnlock()
+
+	// Not in cache, compute and store
 	traversals := make([][]int, len(columns))
 	hasScanner := make([]bool, len(columns))
 
@@ -190,6 +219,15 @@ func getTraversalsAndScanners(tm *reflectx.StructMap, baseType reflect.Type, col
 			}
 		}
 	}
+
+	// Store in cache with write lock
+	traversalCacheLock.Lock()
+	traversalCacheMap[cacheKey] = &traversalCache{
+		traversals: traversals,
+		hasScanner: hasScanner,
+	}
+	traversalCacheLock.Unlock()
+
 	return traversals, hasScanner
 }
 

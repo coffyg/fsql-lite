@@ -353,11 +353,41 @@ func BuildFilterCount(baseQuery string) string {
 }
 
 // indexCaseInsensitive is a helper function to find case-insensitive substrings
-// without the overhead of regular expressions
+// without the overhead of regular expressions - zero allocations version
 func indexCaseInsensitive(s, substr string) int {
-	s = strings.ToUpper(s)
-	substr = strings.ToUpper(substr)
-	return strings.Index(s, substr)
+	if len(substr) == 0 {
+		return 0
+	}
+	if len(substr) > len(s) {
+		return -1
+	}
+
+	// Search character by character
+	substrLen := len(substr)
+	maxIdx := len(s) - substrLen + 1
+
+	for i := 0; i < maxIdx; i++ {
+		match := true
+		for j := 0; j < substrLen; j++ {
+			sc := s[i+j]
+			tc := substr[j]
+			// Fast ASCII uppercase conversion
+			if sc >= 'a' && sc <= 'z' {
+				sc -= 32
+			}
+			if tc >= 'a' && tc <= 'z' {
+				tc -= 32
+			}
+			if sc != tc {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
 }
 
 // GetSortCondition builds a sort condition clause from a Sort map
