@@ -24,20 +24,20 @@ func TestTransactionCommit(t *testing.T) {
 	realm1UUID := uuid.New().String()
 	realm2UUID := uuid.New().String()
 
-	_, err = tx.Exec(ctx, "INSERT INTO realm (uuid, name) VALUES ($1, $2)", realm1UUID, "Realm 1")
+	_, err = tx.Exec("INSERT INTO realm (uuid, name) VALUES ($1, $2)", realm1UUID, "Realm 1")
 	if err != nil {
-		tx.Rollback(ctx)
+		tx.Rollback()
 		t.Fatalf("Failed to insert realm 1: %v", err)
 	}
 
-	_, err = tx.Exec(ctx, "INSERT INTO realm (uuid, name) VALUES ($1, $2)", realm2UUID, "Realm 2")
+	_, err = tx.Exec("INSERT INTO realm (uuid, name) VALUES ($1, $2)", realm2UUID, "Realm 2")
 	if err != nil {
-		tx.Rollback(ctx)
+		tx.Rollback()
 		t.Fatalf("Failed to insert realm 2: %v", err)
 	}
 
 	// Commit
-	err = tx.Commit(ctx)
+	err = tx.Commit()
 	if err != nil {
 		t.Fatalf("Failed to commit transaction: %v", err)
 	}
@@ -68,14 +68,14 @@ func TestTransactionRollback(t *testing.T) {
 
 	// Insert realm
 	realmUUID := uuid.New().String()
-	_, err = tx.Exec(ctx, "INSERT INTO realm (uuid, name) VALUES ($1, $2)", realmUUID, "Test Realm")
+	_, err = tx.Exec("INSERT INTO realm (uuid, name) VALUES ($1, $2)", realmUUID, "Test Realm")
 	if err != nil {
-		tx.Rollback(ctx)
+		tx.Rollback()
 		t.Fatalf("Failed to insert realm: %v", err)
 	}
 
 	// Rollback
-	err = tx.Rollback(ctx)
+	err = tx.Rollback()
 	if err != nil {
 		t.Fatalf("Failed to rollback transaction: %v", err)
 	}
@@ -103,12 +103,12 @@ func TestWithTx(t *testing.T) {
 		realm1UUID := uuid.New().String()
 		realm2UUID := uuid.New().String()
 
-		_, err := tx.Exec(ctx, "INSERT INTO realm (uuid, name) VALUES ($1, $2)", realm1UUID, "Realm 1")
+		_, err := tx.Exec("INSERT INTO realm (uuid, name) VALUES ($1, $2)", realm1UUID, "Realm 1")
 		if err != nil {
 			return err
 		}
 
-		_, err = tx.Exec(ctx, "INSERT INTO realm (uuid, name) VALUES ($1, $2)", realm2UUID, "Realm 2")
+		_, err = tx.Exec("INSERT INTO realm (uuid, name) VALUES ($1, $2)", realm2UUID, "Realm 2")
 		if err != nil {
 			return err
 		}
@@ -141,7 +141,7 @@ func TestWithTxRollback(t *testing.T) {
 	// Use WithTx with error to cause rollback
 	err := WithTx(ctx, func(ctx context.Context, tx *Tx) error {
 		realmUUID := uuid.New().String()
-		_, err := tx.Exec(ctx, "INSERT INTO realm (uuid, name) VALUES ($1, $2)", realmUUID, "Test Realm")
+		_, err := tx.Exec("INSERT INTO realm (uuid, name) VALUES ($1, $2)", realmUUID, "Test Realm")
 		if err != nil {
 			return err
 		}
@@ -175,7 +175,7 @@ func TestWithTxRetry(t *testing.T) {
 	attemptCount := 0
 	err := WithTxRetry(ctx, func(ctx context.Context, tx *Tx) error {
 		realmUUID := uuid.New().String()
-		_, err := tx.Exec(ctx, "INSERT INTO realm (uuid, name) VALUES ($1, $2)", realmUUID, "Test Realm")
+		_, err := tx.Exec("INSERT INTO realm (uuid, name) VALUES ($1, $2)", realmUUID, "Test Realm")
 		if err != nil {
 			return err
 		}
@@ -221,7 +221,7 @@ func TestTransactionIsolationLevels(t *testing.T) {
 	opts.IsoLevel = pgx.ReadCommitted
 
 	err := WithTxOptions(ctx, opts, func(ctx context.Context, tx *Tx) error {
-		_, err := tx.Exec(ctx, "INSERT INTO realm (uuid, name) VALUES ($1, $2)", uuid.New().String(), "read-committed")
+		_, err := tx.Exec("INSERT INTO realm (uuid, name) VALUES ($1, $2)", uuid.New().String(), "read-committed")
 		return err
 	})
 	if err != nil {
@@ -231,7 +231,7 @@ func TestTransactionIsolationLevels(t *testing.T) {
 	// Test repeatable read
 	opts.IsoLevel = pgx.RepeatableRead
 	err = WithTxOptions(ctx, opts, func(ctx context.Context, tx *Tx) error {
-		_, err := tx.Exec(ctx, "INSERT INTO realm (uuid, name) VALUES ($1, $2)", uuid.New().String(), "repeatable-read")
+		_, err := tx.Exec("INSERT INTO realm (uuid, name) VALUES ($1, $2)", uuid.New().String(), "repeatable-read")
 		return err
 	})
 	if err != nil {
@@ -241,7 +241,7 @@ func TestTransactionIsolationLevels(t *testing.T) {
 	// Test serializable
 	opts.IsoLevel = pgx.Serializable
 	err = WithTxOptions(ctx, opts, func(ctx context.Context, tx *Tx) error {
-		_, err := tx.Exec(ctx, "INSERT INTO realm (uuid, name) VALUES ($1, $2)", uuid.New().String(), "serializable")
+		_, err := tx.Exec("INSERT INTO realm (uuid, name) VALUES ($1, $2)", uuid.New().String(), "serializable")
 		return err
 	})
 	if err != nil {
@@ -350,7 +350,7 @@ func TestReadOnlyTransaction(t *testing.T) {
 	// Read-only transaction should allow reads
 	var count int
 	err = WithReadTx(ctx, func(ctx context.Context, tx *Tx) error {
-		row := tx.QueryRow(ctx, "SELECT COUNT(*) FROM realm")
+		row := tx.QueryRow("SELECT COUNT(*) FROM realm")
 		return row.Scan(&count)
 	})
 
@@ -364,7 +364,7 @@ func TestReadOnlyTransaction(t *testing.T) {
 
 	// Read-only transaction should reject writes
 	err = WithReadTx(ctx, func(ctx context.Context, tx *Tx) error {
-		_, err := tx.Exec(ctx, "INSERT INTO realm (uuid, name) VALUES ($1, $2)", uuid.New().String(), "Should Fail")
+		_, err := tx.Exec("INSERT INTO realm (uuid, name) VALUES ($1, $2)", uuid.New().String(), "Should Fail")
 		return err
 	})
 

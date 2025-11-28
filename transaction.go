@@ -83,13 +83,18 @@ func BeginTxWithOptions(ctx context.Context, opts TxOptions) (*Tx, error) {
 	return &Tx{tx: tx}, nil
 }
 
-// Commit commits the transaction
-func (tx *Tx) Commit(ctx context.Context) error {
+// Commit commits the transaction (context optional for compatibility)
+func (tx *Tx) Commit(ctx ...context.Context) error {
 	if tx.tx == nil {
 		return ErrTxDone
 	}
 
-	err := tx.tx.Commit(ctx)
+	c := context.Background()
+	if len(ctx) > 0 {
+		c = ctx[0]
+	}
+
+	err := tx.tx.Commit(c)
 	if err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
@@ -97,13 +102,18 @@ func (tx *Tx) Commit(ctx context.Context) error {
 	return nil
 }
 
-// Rollback aborts the transaction
-func (tx *Tx) Rollback(ctx context.Context) error {
+// Rollback aborts the transaction (context optional for compatibility)
+func (tx *Tx) Rollback(ctx ...context.Context) error {
 	if tx.tx == nil {
 		return ErrTxDone
 	}
 
-	err := tx.tx.Rollback(ctx)
+	c := context.Background()
+	if len(ctx) > 0 {
+		c = ctx[0]
+	}
+
+	err := tx.tx.Rollback(c)
 	if err != nil && !errors.Is(err, pgx.ErrTxClosed) {
 		return fmt.Errorf("failed to rollback transaction: %w", err)
 	}
@@ -111,8 +121,17 @@ func (tx *Tx) Rollback(ctx context.Context) error {
 	return nil
 }
 
-// Exec executes a query within the transaction
-func (tx *Tx) Exec(ctx context.Context, query string, args ...interface{}) (pgconn.CommandTag, error) {
+// Exec executes a query within the transaction (no context needed for compat)
+func (tx *Tx) Exec(query string, args ...interface{}) (pgconn.CommandTag, error) {
+	if tx.tx == nil {
+		return pgconn.CommandTag{}, ErrTxDone
+	}
+
+	return tx.tx.Exec(context.Background(), query, args...)
+}
+
+// ExecContext executes a query within the transaction with context
+func (tx *Tx) ExecContext(ctx context.Context, query string, args ...interface{}) (pgconn.CommandTag, error) {
 	if tx.tx == nil {
 		return pgconn.CommandTag{}, ErrTxDone
 	}
@@ -120,8 +139,17 @@ func (tx *Tx) Exec(ctx context.Context, query string, args ...interface{}) (pgco
 	return tx.tx.Exec(ctx, query, args...)
 }
 
-// Query executes a query that returns rows within the transaction
-func (tx *Tx) Query(ctx context.Context, query string, args ...interface{}) (pgx.Rows, error) {
+// Query executes a query that returns rows within the transaction (no context for compat)
+func (tx *Tx) Query(query string, args ...interface{}) (pgx.Rows, error) {
+	if tx.tx == nil {
+		return nil, ErrTxDone
+	}
+
+	return tx.tx.Query(context.Background(), query, args...)
+}
+
+// QueryContext executes a query that returns rows with context
+func (tx *Tx) QueryContext(ctx context.Context, query string, args ...interface{}) (pgx.Rows, error) {
 	if tx.tx == nil {
 		return nil, ErrTxDone
 	}
@@ -129,8 +157,17 @@ func (tx *Tx) Query(ctx context.Context, query string, args ...interface{}) (pgx
 	return tx.tx.Query(ctx, query, args...)
 }
 
-// QueryRow executes a query that returns a single row within the transaction
-func (tx *Tx) QueryRow(ctx context.Context, query string, args ...interface{}) pgx.Row {
+// QueryRow executes a query that returns a single row (no context for compat)
+func (tx *Tx) QueryRow(query string, args ...interface{}) pgx.Row {
+	if tx.tx == nil {
+		return nil
+	}
+
+	return tx.tx.QueryRow(context.Background(), query, args...)
+}
+
+// QueryRowContext executes a query that returns a single row with context
+func (tx *Tx) QueryRowContext(ctx context.Context, query string, args ...interface{}) pgx.Row {
 	if tx.tx == nil {
 		return nil
 	}

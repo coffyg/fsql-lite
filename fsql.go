@@ -17,8 +17,8 @@ var (
 	DbInitialised bool = false
 )
 
-// InitDB initializes the global database pool
-func InitDB(databaseURL string, maxCon int, minCon int) (*pgxpool.Pool, error) {
+// InitDBWithPool initializes the global database pool with explicit pool settings
+func InitDBWithPool(databaseURL string, maxCon int, minCon int) (*pgxpool.Pool, error) {
 	poolConfig, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse database URL: %w", err)
@@ -28,14 +28,14 @@ func InitDB(databaseURL string, maxCon int, minCon int) (*pgxpool.Pool, error) {
 	poolConfig.MaxConns = int32(maxCon)
 	poolConfig.MinConns = int32(minCon)
 
+	// Use simple protocol - no prepared statements (MUST be set BEFORE creating pool)
+	poolConfig.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	poolConfig.ConnConfig.StatementCacheCapacity = 0
+
 	DB, err = pgxpool.NewWithConfig(context.Background(), poolConfig)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create connection pool: %w", err)
 	}
-
-	// Use simple protocol - no prepared statements
-	DB.Config().ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
-	DB.Config().ConnConfig.StatementCacheCapacity = 0
 
 	// Test connection
 	if err := DB.Ping(context.Background()); err != nil {
