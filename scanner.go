@@ -1,38 +1,48 @@
-// scanner.go - Adapted from original fsql scanner for pgx
+// scanner.go - Uses sqlx's reflectx for efficient struct scanning with pgx
 package fsql
 
 import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"reflect"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jmoiron/sqlx/reflectx"
 )
 
-// ColumnCache for pre-computed column mapping info
-type ColumnCache struct {
-	columnIndexes map[string]int
-	fieldIndices  [][]int
-	fieldPointers []interface{}
-	initialized   bool
+// pgxScannerWrapper wraps sql.Scanner to handle pgx's string returns for JSONB
+// pgx returns string for JSONB in text mode, but sqlx-compatible Scanners expect []byte
+type pgxScannerWrapper struct {
+	target sql.Scanner
 }
 
-// Pool for column caches based on query patterns
-var columnCachePool = sync.Pool{
-	New: func() interface{} {
-		return &ColumnCache{
-			columnIndexes: make(map[string]int, 20),
-			fieldIndices:  make([][]int, 0, 20),
-			fieldPointers: make([]interface{}, 0, 20),
-		}
-	},
+func (p *pgxScannerWrapper) Scan(value interface{}) error {
+	if value == nil {
+		return p.target.Scan(nil)
+	}
+	// pgx returns string for JSONB/text types, convert to []byte for compatibility
+	if str, ok := value.(string); ok {
+		return p.target.Scan([]byte(str))
+	}
+	return p.target.Scan(value)
 }
 
-// Column cache map for faster lookups
-var columnCacheMap sync.Map
+// Cache for type → column mappings to avoid repeated reflection
+type typeColumnCache struct {
+	traversals [][]int
+	hasScanner []bool // true if field implements sql.Scanner
+}
+
+var (
+	// columnCache maps (type, columns fingerprint) → cached traversals
+	columnCache     = make(map[string]*typeColumnCache)
+	columnCacheLock sync.RWMutex
+)
+
+// Global mapper using "db" tag (same as sqlx)
+var mapper = reflectx.NewMapperFunc("db", func(s string) string { return s })
 
 // getColumns extracts column names from pgx FieldDescriptions
 func getColumns(rows pgx.Rows) []string {
@@ -44,268 +54,195 @@ func getColumns(rows pgx.Rows) []string {
 	return columns
 }
 
-// ScanRows efficiently scans rows into a destination struct or slice
-// This is adapted from the original fsql scanner
+// ScanRows scans pgx rows into a destination (struct or slice)
 func ScanRows(rows pgx.Rows, dest interface{}) error {
 	value := reflect.ValueOf(dest)
 	if value.Kind() != reflect.Ptr {
 		return errors.New("dest must be a pointer")
 	}
 
-	// Get the pointed-to value
 	direct := reflect.Indirect(value)
-
-	// Get column names
 	columns := getColumns(rows)
 
-	// Create a fingerprint of the columns to use as cache key
-	columnFingerprint := getColumnFingerprint(columns)
+	// Handle slice vs single struct
+	if direct.Kind() == reflect.Slice {
+		return scanSlice(rows, direct, columns)
+	}
+	return scanSingle(rows, direct, columns)
+}
 
-	// Check if we have a cached scanner for this column set
-	var cache *ColumnCache
-	cacheEntry, found := columnCacheMap.Load(columnFingerprint)
-	if found {
-		cache = cacheEntry.(*ColumnCache)
-	} else {
-		// Create a new cache entry
-		cache = columnCachePool.Get().(*ColumnCache)
-		cache.columnIndexes = make(map[string]int, len(columns))
-		cache.fieldIndices = make([][]int, len(columns))
-		cache.fieldPointers = make([]interface{}, len(columns))
-		cache.initialized = false
+// scanSlice scans rows into a slice destination
+func scanSlice(rows pgx.Rows, slice reflect.Value, columns []string) error {
+	sliceType := slice.Type().Elem()
+	isPtr := sliceType.Kind() == reflect.Ptr
 
-		// Store in cache for future use
-		columnCacheMap.Store(columnFingerprint, cache)
+	baseType := sliceType
+	if isPtr {
+		baseType = sliceType.Elem()
 	}
 
-	// For slice destinations, handle differently
-	if direct.Kind() == reflect.Slice {
-		sliceType := direct.Type().Elem()
-		isPtr := sliceType.Kind() == reflect.Ptr
-
-		// Get the base element type
-		baseType := sliceType
-		if isPtr {
-			baseType = sliceType.Elem()
-		}
-
-		// Check if this is a slice of primitives (not structs)
-		if baseType.Kind() != reflect.Struct {
-			// Simple scan for primitive types (string, int, etc)
-			for rows.Next() {
-				rowDest := reflect.New(baseType)
-				if err := rows.Scan(rowDest.Interface()); err != nil {
-					return err
-				}
-				if isPtr {
-					direct.Set(reflect.Append(direct, rowDest))
-				} else {
-					direct.Set(reflect.Append(direct, rowDest.Elem()))
-				}
-			}
-			return rows.Err()
-		}
-
+	// Handle primitive slices
+	if baseType.Kind() != reflect.Struct {
 		for rows.Next() {
-			// Create a new item
-			var rowDest reflect.Value
-			if isPtr {
-				rowDest = reflect.New(sliceType.Elem())
-			} else {
-				rowDest = reflect.New(sliceType)
-			}
-
-			// Initialize cache if needed
-			if !cache.initialized {
-				err := initializeCache(cache, columns, rowDest)
-				if err != nil {
-					return err
-				}
-			}
-
-			// Scan into the row destination using cached mapping
-			err := scanWithCache(cache, rows)
-			if err != nil {
+			vp := reflect.New(baseType)
+			if err := rows.Scan(vp.Interface()); err != nil {
 				return err
 			}
-
-			// Append to the result slice
 			if isPtr {
-				direct.Set(reflect.Append(direct, rowDest))
+				slice.Set(reflect.Append(slice, vp))
 			} else {
-				direct.Set(reflect.Append(direct, reflect.Indirect(rowDest)))
+				slice.Set(reflect.Append(slice, vp.Elem()))
 			}
 		}
-
 		return rows.Err()
-	} else {
-		// For a single destination
+	}
+
+	// Get field traversals and scanner flags ONCE for the type
+	tm := mapper.TypeMap(baseType)
+	traversals, hasScanner := getTraversalsAndScanners(tm, baseType, columns)
+
+	// Reusable values slice for scanning
+	values := make([]interface{}, len(columns))
+
+	for rows.Next() {
+		vp := reflect.New(baseType)
+		v := vp.Elem()
+
+		// Set up scan destinations using reflectx field traversals
+		if err := setupScanDests(v, columns, traversals, hasScanner, values); err != nil {
+			return err
+		}
+
+		if err := rows.Scan(values...); err != nil {
+			return err
+		}
+
+		if isPtr {
+			slice.Set(reflect.Append(slice, vp))
+		} else {
+			slice.Set(reflect.Append(slice, v))
+		}
+	}
+	return rows.Err()
+}
+
+// scanSingle scans a single row into a struct
+func scanSingle(rows pgx.Rows, dest reflect.Value, columns []string) error {
+	// Handle primitives
+	if dest.Kind() != reflect.Struct {
 		if !rows.Next() {
 			if err := rows.Err(); err != nil {
 				return err
 			}
 			return sql.ErrNoRows
 		}
+		return rows.Scan(dest.Addr().Interface())
+	}
 
-		// Check if this is a primitive type (not a struct)
-		if direct.Kind() != reflect.Struct {
-			// Simple scan for primitive types (string, int, *string, etc)
-			if err := rows.Scan(dest); err != nil {
-				return err
-			}
-			return rows.Err()
-		}
-
-		// Initialize cache if needed
-		if !cache.initialized {
-			err := initializeCache(cache, columns, value)
-			if err != nil {
-				return err
-			}
-		}
-
-		// Scan into destination using cached mapping
-		err := scanWithCache(cache, rows)
-		if err != nil {
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
 			return err
 		}
-
-		// Check if there are more rows (which would be unexpected)
-		if rows.Next() {
-			return errors.New("query returned multiple rows for a single destination")
-		}
-
-		return rows.Err()
+		return sql.ErrNoRows
 	}
+
+	tm := mapper.TypeMap(dest.Type())
+	traversals, hasScanner := getTraversalsAndScanners(tm, dest.Type(), columns)
+	values := make([]interface{}, len(columns))
+
+	if err := setupScanDests(dest, columns, traversals, hasScanner, values); err != nil {
+		return err
+	}
+
+	if err := rows.Scan(values...); err != nil {
+		return err
+	}
+
+	if rows.Next() {
+		return errors.New("query returned multiple rows for a single destination")
+	}
+	return rows.Err()
 }
 
-// Initialize the column mapping cache
-func initializeCache(cache *ColumnCache, columns []string, value reflect.Value) error {
-	// Get the pointed-to value
-	elem := reflect.Indirect(value)
-	elemType := elem.Type()
+// getTraversalsAndScanners gets field traversals and scanner flags for columns
+func getTraversalsAndScanners(tm *reflectx.StructMap, baseType reflect.Type, columns []string) ([][]int, []bool) {
+	traversals := make([][]int, len(columns))
+	hasScanner := make([]bool, len(columns))
 
-	// Get field mapping
-	fieldMap := getFieldMap(elemType)
+	for i, col := range columns {
+		fi := tm.GetByPath(col)
+		if fi == nil {
+			continue
+		}
+		traversals[i] = fi.Index
 
-	// Create column-to-field mapping
-	for i, colName := range columns {
-		cache.columnIndexes[colName] = i
+		// Check if field type implements sql.Scanner
+		fieldType := fi.Field.Type
+		if fieldType.Kind() == reflect.Ptr {
+			// *T implements Scanner if *T has Scan method
+			if fieldType.Implements(scannerType) {
+				hasScanner[i] = true
+			}
+		} else {
+			// T implements Scanner if *T has Scan method (pointer receiver)
+			if reflect.PtrTo(fieldType).Implements(scannerType) {
+				hasScanner[i] = true
+			}
+		}
+	}
+	return traversals, hasScanner
+}
 
-		// Find field indices for this column
-		fieldPath, ok := fieldMap[colName]
-		if !ok {
-			// If column doesn't map to a field, use a placeholder
+// sql.Scanner type for interface check
+var scannerType = reflect.TypeOf((*sql.Scanner)(nil)).Elem()
+
+// setupScanDests sets up scan destinations using field traversals
+func setupScanDests(v reflect.Value, columns []string, traversals [][]int, hasScanner []bool, values []interface{}) error {
+	for i, traversal := range traversals {
+		if traversal == nil {
+			// Column doesn't map to a field - use placeholder
 			var placeholder interface{}
-			cache.fieldPointers[i] = &placeholder
+			values[i] = &placeholder
 			continue
 		}
 
-		// Store field indices for this column
-		cache.fieldIndices[i] = fieldPath
-
-		// Create scanner pointer for this field
-		field := elem
-		for _, idx := range fieldPath {
-			field = field.Field(idx)
-			if field.Kind() == reflect.Ptr && field.IsNil() {
-				field.Set(reflect.New(field.Type().Elem()))
+		// Navigate through the traversal, initializing nil pointers along the way
+		f := v
+		for _, idx := range traversal {
+			if f.Kind() == reflect.Ptr {
+				if f.IsNil() {
+					f.Set(reflect.New(f.Type().Elem()))
+				}
+				f = f.Elem()
 			}
-			if field.Kind() == reflect.Ptr {
-				field = field.Elem()
+			f = f.Field(idx)
+		}
+
+		// Wrap sql.Scanner types to handle pgx's string→[]byte conversion for JSONB
+		if hasScanner[i] {
+			// For pointer fields (*JSONSettings), the Scanner interface is on the pointer type
+			// Initialize if nil, then use the pointer value directly as the scanner
+			if f.Kind() == reflect.Ptr {
+				if f.IsNil() {
+					f.Set(reflect.New(f.Type().Elem()))
+				}
+				if scanner, ok := f.Interface().(sql.Scanner); ok {
+					values[i] = &pgxScannerWrapper{target: scanner}
+					continue
+				}
+			} else {
+				// For non-pointer fields, get address and check for Scanner
+				ptr := f.Addr().Interface()
+				if scanner, ok := ptr.(sql.Scanner); ok {
+					values[i] = &pgxScannerWrapper{target: scanner}
+					continue
+				}
 			}
 		}
 
-		// Create a suitable destination pointer based on field type
-		cache.fieldPointers[i] = getDestPtr(field)
+		values[i] = f.Addr().Interface()
 	}
-
-	cache.initialized = true
 	return nil
-}
-
-// Scan a row using the cached mapping
-func scanWithCache(cache *ColumnCache, rows pgx.Rows) error {
-	return rows.Scan(cache.fieldPointers...)
-}
-
-// Get a field map for a given type
-var fieldMapCache sync.Map
-
-func getFieldMap(t reflect.Type) map[string][]int {
-	// Check if we already have this type in cache
-	if cached, ok := fieldMapCache.Load(t); ok {
-		return cached.(map[string][]int)
-	}
-
-	fieldMap := make(map[string][]int)
-
-	// Create field map by recursively analyzing the type
-	buildFieldMap(t, fieldMap, nil)
-
-	// Store in cache for future use
-	fieldMapCache.Store(t, fieldMap)
-
-	return fieldMap
-}
-
-// Build a field map by recursively analyzing the type
-func buildFieldMap(t reflect.Type, fieldMap map[string][]int, path []int) {
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-
-		// Skip unexported fields
-		if field.PkgPath != "" {
-			continue
-		}
-
-		// Get DB tag
-		tag := field.Tag.Get("db")
-		if tag == "" || tag == "-" {
-			// If this field is a struct, recurse into it
-			if field.Type.Kind() == reflect.Struct {
-				// Add this field index to the path
-				newPath := make([]int, len(path)+1)
-				copy(newPath, path)
-				newPath[len(path)] = i
-
-				// Recurse
-				buildFieldMap(field.Type, fieldMap, newPath)
-			}
-			continue
-		}
-
-		// Create the field path
-		fieldPath := make([]int, len(path)+1)
-		copy(fieldPath, path)
-		fieldPath[len(path)] = i
-
-		// Store the field path
-		fieldMap[tag] = fieldPath
-	}
-}
-
-// Create a destination pointer for a field
-func getDestPtr(field reflect.Value) interface{} {
-	// For pgx, we can just return the address of the field directly
-	// pgx handles type conversion internally
-	return field.Addr().Interface()
-}
-
-// Generate a fingerprint for a set of columns
-func getColumnFingerprint(columns []string) string {
-	if len(columns) < 5 {
-		fingerprint := ""
-		for i, col := range columns {
-			if i > 0 {
-				fingerprint += "|"
-			}
-			fingerprint += col
-		}
-		return fingerprint
-	}
-	// For larger sets, use the first column plus length as a quick fingerprint
-	return columns[0] + "|" + columns[len(columns)-1] + "|" + fmt.Sprintf("%d", len(columns))
 }
 
 // StructScan scans a single row from pgx.Rows into a struct
@@ -326,7 +263,6 @@ func Get(dest interface{}, query string, args ...interface{}) error {
 		return err
 	}
 	defer rows.Close()
-
 	return StructScan(rows, dest)
 }
 
@@ -348,15 +284,29 @@ func ScanSingle(rows pgx.Rows, dest interface{}) error {
 		return sql.ErrNoRows
 	}
 
-	err := ScanRows(rows, dest)
-	if err != nil {
+	v := reflect.ValueOf(dest)
+	if v.Kind() != reflect.Ptr {
+		return errors.New("dest must be a pointer")
+	}
+
+	direct := reflect.Indirect(v)
+	columns := getColumns(rows)
+
+	tm := mapper.TypeMap(direct.Type())
+	traversals, hasScanner := getTraversalsAndScanners(tm, direct.Type(), columns)
+	values := make([]interface{}, len(columns))
+
+	if err := setupScanDests(direct, columns, traversals, hasScanner, values); err != nil {
+		return err
+	}
+
+	if err := rows.Scan(values...); err != nil {
 		return err
 	}
 
 	if rows.Next() {
 		return errors.New("query returned multiple rows for a single destination")
 	}
-
 	return rows.Err()
 }
 
@@ -365,7 +315,6 @@ type NullableString struct {
 	sql.NullString
 }
 
-// Value implements driver.Valuer
 func (ns NullableString) Value() (interface{}, error) {
 	if !ns.Valid {
 		return nil, nil
@@ -373,13 +322,11 @@ func (ns NullableString) Value() (interface{}, error) {
 	return ns.String, nil
 }
 
-// Scan implements sql.Scanner
 func (ns *NullableString) Scan(value interface{}) error {
 	return ns.NullString.Scan(value)
 }
 
-// ResetScannerCache clears all cached field mappings
+// ResetScannerCache clears mapper cache (if needed)
 func ResetScannerCache() {
-	columnCacheMap = sync.Map{}
-	fieldMapCache = sync.Map{}
+	mapper = reflectx.NewMapperFunc("db", func(s string) string { return s })
 }

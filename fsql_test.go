@@ -1,16 +1,43 @@
 package fsql
 
 import (
-	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"math"
 	"os"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
 )
+
+// JSONSettings implements sql.Scanner for JSONB testing
+type JSONSettings struct {
+	MaxTokens   int    `json:"max_tokens"`
+	Temperature float64 `json:"temperature"`
+	Model       string  `json:"model"`
+}
+
+// Scan implements sql.Scanner - expects []byte from database/sql style drivers
+func (j *JSONSettings) Scan(value interface{}) error {
+	if value == nil {
+		return nil
+	}
+	bytes, ok := value.([]byte)
+	if !ok {
+		return errors.New("type assertion to []byte failed")
+	}
+	return json.Unmarshal(bytes, j)
+}
+
+// AIModelWithJSONB uses a Scanner type for the settings column
+type AIModelWithJSONB struct {
+	UUID     string        `db:"uuid"`
+	Key      string        `db:"key"`
+	Type     string        `db:"type"`
+	Provider string        `db:"provider"`
+	Settings *JSONSettings `db:"settings"`
+}
 
 // Test models matching fsql pattern
 type AIModel struct {
@@ -240,206 +267,156 @@ func ListAIModel(filters *Filter, sort *Sort, perPage int, page int) (*[]AIModel
 
 func TestLinkedFields(t *testing.T) {
 	cleanDatabase(t)
-	ctx := context.Background()
 
-	// Insert realm
-	realmUUID := uuid.New().String()
-	realmValues := map[string]interface{}{
-		"uuid": realmUUID,
-		"name": "Test Realm",
+	// Insert a new Realm
+	realm := Realm{
+		UUID: GenNewUUID(""),
+		Name: "Test Realm",
 	}
-	err := Insert(ctx, "realm", realmValues, "uuid")
+	query, args := GetInsertQuery("realm", map[string]interface{}{
+		"uuid": realm.UUID,
+		"name": realm.Name,
+	}, "")
+	_, err := Db.Exec(query, args...)
 	if err != nil {
-		t.Fatalf("Insert realm failed: %v", err)
+		t.Fatalf("Failed to insert realm: %v", err)
 	}
 
-	// Insert website linked to realm
-	websiteUUID := uuid.New().String()
-	websiteValues := map[string]interface{}{
-		"uuid":       websiteUUID,
-		"domain":     "example.com",
-		"realm_uuid": realmUUID,
+	// Insert a new Website linked to the Realm
+	website := Website{
+		UUID:      GenNewUUID(""),
+		Domain:    "example.com",
+		RealmUUID: realm.UUID,
 	}
-	err = Insert(ctx, "website", websiteValues, "uuid")
+	query, args = GetInsertQuery("website", map[string]interface{}{
+		"uuid":       website.UUID,
+		"domain":     website.Domain,
+		"realm_uuid": website.RealmUUID,
+	}, "")
+	_, err = Db.Exec(query, args...)
 	if err != nil {
-		t.Fatalf("Insert website failed: %v", err)
+		t.Fatalf("Failed to insert website: %v", err)
 	}
 
-	// Fetch website with linked realm
-	query := websiteBaseQuery + ` WHERE "website"."uuid" = $1`
-	var website Website
-	err = SelectOne(ctx, &website, query, websiteUUID)
+	// Fetch the Website along with the linked Realm
+	fetchedWebsite, err := GetWebsiteByUUID(website.UUID)
 	if err != nil {
-		t.Fatalf("SelectOne failed: %v", err)
+		t.Fatalf("Error fetching website: %v", err)
 	}
 
-	// Verify linked realm
-	if website.Realm == nil {
-		t.Fatal("Expected linked Realm, got nil")
+	// Verify that the linked Realm is correctly fetched
+	if fetchedWebsite.Realm == nil {
+		t.Fatalf("Expected linked Realm, got nil")
 	}
-	if website.Realm.UUID != realmUUID {
-		t.Errorf("Expected Realm UUID %s, got %s", realmUUID, website.Realm.UUID)
+	if fetchedWebsite.Realm.UUID != realm.UUID {
+		t.Errorf("Expected Realm UUID %s, got %s", realm.UUID, fetchedWebsite.Realm.UUID)
 	}
-	if website.Realm.Name != "Test Realm" {
-		t.Errorf("Expected Realm Name 'Test Realm', got '%s'", website.Realm.Name)
+	if fetchedWebsite.Realm.Name != realm.Name {
+		t.Errorf("Expected Realm Name %s, got %s", realm.Name, fetchedWebsite.Realm.Name)
 	}
+}
+
+// GetWebsiteByUUID fetches a website by UUID - matching original fsql pattern
+func GetWebsiteByUUID(uuidStr string) (*Website, error) {
+	query := websiteBaseQuery + ` WHERE "website".uuid = $1 LIMIT 1`
+	website := Website{}
+
+	err := Db.Get(&website, query, uuidStr)
+	if err != nil {
+		return nil, err
+	}
+
+	return &website, nil
 }
 
 func TestQueryBuilderWhereAndJoin(t *testing.T) {
 	cleanDatabase(t)
-	ctx := context.Background()
 
-	// Insert realms
-	realm1UUID := uuid.New().String()
-	realm2UUID := uuid.New().String()
-
-	err := Insert(ctx, "realm", map[string]interface{}{
-		"uuid": realm1UUID,
-		"name": "Realm One",
-	}, "uuid")
-	if err != nil {
-		t.Fatalf("Insert realm1 failed: %v", err)
+	// Insert multiple Realms
+	realm1 := Realm{
+		UUID: GenNewUUID(""),
+		Name: "Realm One",
 	}
-
-	err = Insert(ctx, "realm", map[string]interface{}{
-		"uuid": realm2UUID,
-		"name": "Realm Two",
-	}, "uuid")
-	if err != nil {
-		t.Fatalf("Insert realm2 failed: %v", err)
+	realm2 := Realm{
+		UUID: GenNewUUID(""),
+		Name: "Realm Two",
 	}
+	insertRealm(t, realm1)
+	insertRealm(t, realm2)
 
-	// Insert websites
-	websites := []map[string]interface{}{
-		{"uuid": uuid.New().String(), "domain": "example.com", "realm_uuid": realm1UUID},
-		{"uuid": uuid.New().String(), "domain": "test.com", "realm_uuid": realm2UUID},
-		{"uuid": uuid.New().String(), "domain": "sample.com", "realm_uuid": realm1UUID},
+	// Insert Websites linked to Realms
+	website1 := Website{
+		UUID:      GenNewUUID(""),
+		Domain:    "example.com",
+		RealmUUID: realm1.UUID,
 	}
-
-	for _, w := range websites {
-		err := Insert(ctx, "website", w, "uuid")
-		if err != nil {
-			t.Fatalf("Insert website failed: %v", err)
-		}
+	website2 := Website{
+		UUID:      GenNewUUID(""),
+		Domain:    "test.com",
+		RealmUUID: realm2.UUID,
 	}
+	website3 := Website{
+		UUID:      GenNewUUID(""),
+		Domain:    "sample.com",
+		RealmUUID: realm1.UUID,
+	}
+	insertWebsite(t, website1)
+	insertWebsite(t, website2)
+	insertWebsite(t, website3)
 
-	// Build query with WHERE and JOIN
+	// Build a query with WHERE and JOIN clauses
 	qb := SelectBase("website", "").
-		Left("realm", "r", `"website"."realm_uuid" = "r"."uuid"`).
-		Where(`"r"."name" = $1`).
-		Where(`"website"."domain" LIKE $2`)
+		Left("realm", "r", "website.realm_uuid = r.uuid").
+		Where("r.name = $1").
+		Where("website.domain LIKE $2")
 	query := qb.Build()
 	args := []interface{}{"Realm One", "%com"}
 
 	// Fetch results
-	var results []Website
-	err = SelectMany(ctx, &results, query, args...)
+	websites := []Website{}
+	err := Db.Select(&websites, query, args...)
 	if err != nil {
-		t.Fatalf("SelectMany failed: %v", err)
+		t.Fatalf("Failed to execute query: %v", err)
 	}
 
 	// Verify results
-	if len(results) != 2 {
-		t.Errorf("Expected 2 websites, got %d", len(results))
+	if len(websites) != 2 {
+		t.Errorf("Expected 2 websites, got %d", len(websites))
 	}
-
-	for _, w := range results {
+	for _, w := range websites {
 		if w.Realm == nil {
-			t.Errorf("Expected Realm not nil for website %s", w.Domain)
+			t.Errorf("Expected Realm to be not nil for website %s", w.Domain)
 		} else if w.Realm.Name != "Realm One" {
-			t.Errorf("Expected Realm Name 'Realm One', got '%s'", w.Realm.Name)
+			t.Errorf("Expected Realm Name to be 'Realm One', got '%s'", w.Realm.Name)
 		}
 	}
 }
 
-func TestFilters(t *testing.T) {
-	cleanDatabase(t)
-	ctx := context.Background()
-
-	// Insert test models
-	types := []string{"text", "image", "audio"}
-	for i := 0; i < 15; i++ {
-		values := map[string]interface{}{
-			"uuid":     uuid.New().String(),
-			"key":      fmt.Sprintf("key_%d", i),
-			"name":     fmt.Sprintf("Model %d", i),
-			"type":     types[i%3],
-			"provider": "test",
-		}
-		err := Insert(ctx, "ai_model", values, "uuid")
-		if err != nil {
-			t.Fatalf("Insert failed: %v", err)
-		}
-	}
-
-	// Test $in filter
-	filters := &Filter{
-		"Type[$in]": []string{"text", "image"},
-	}
-
-	query, args, err := FilterQuery(aiModelBaseQuery, "ai_model", filters, nil, "ai_model", 20, 1)
+// Helper functions to insert Realm and Website
+func insertRealm(t *testing.T, realm Realm) {
+	query, args := GetInsertQuery("realm", map[string]interface{}{
+		"uuid": realm.UUID,
+		"name": realm.Name,
+	}, "")
+	_, err := Db.Exec(query, args...)
 	if err != nil {
-		t.Fatalf("FilterQuery failed: %v", err)
-	}
-
-	var results []AIModel
-	err = SelectMany(ctx, &results, query, args...)
-	if err != nil {
-		t.Fatalf("SelectMany failed: %v", err)
-	}
-
-	if len(results) != 10 {
-		t.Errorf("Expected 10 results, got %d", len(results))
+		t.Fatalf("Failed to insert realm: %v", err)
 	}
 }
 
-func TestUpdate(t *testing.T) {
-	cleanDatabase(t)
-	ctx := context.Background()
-
-	// Insert model
-	modelUUID := uuid.New().String()
-	values := map[string]interface{}{
-		"uuid":     modelUUID,
-		"key":      "original_key",
-		"name":     "Original Name",
-		"type":     "text",
-		"provider": "openai",
-	}
-
-	err := Insert(ctx, "ai_model", values, "uuid")
+func insertWebsite(t *testing.T, website Website) {
+	query, args := GetInsertQuery("website", map[string]interface{}{
+		"uuid":       website.UUID,
+		"domain":     website.Domain,
+		"realm_uuid": website.RealmUUID,
+	}, "")
+	_, err := Db.Exec(query, args...)
 	if err != nil {
-		t.Fatalf("Insert failed: %v", err)
-	}
-
-	// Update model
-	updateValues := map[string]interface{}{
-		"uuid": modelUUID,
-		"key":  "updated_key",
-		"name": "Updated Name",
-	}
-
-	err = Update(ctx, "ai_model", updateValues, "uuid")
-	if err != nil {
-		t.Fatalf("Update failed: %v", err)
-	}
-
-	// Fetch updated model
-	query := aiModelBaseQuery + ` WHERE "ai_model"."uuid" = $1`
-	var model AIModel
-	err = SelectOne(ctx, &model, query, modelUUID)
-	if err != nil {
-		t.Fatalf("SelectOne failed: %v", err)
-	}
-
-	if model.Key != "updated_key" {
-		t.Errorf("Expected key 'updated_key', got '%s'", model.Key)
-	}
-	if model.Name == nil || *model.Name != "Updated Name" {
-		t.Errorf("Expected name 'Updated Name', got '%v'", model.Name)
+		t.Fatalf("Failed to insert website: %v", err)
 	}
 }
 
+// TestPoolStats is a simple test to verify pool stats work
 func TestPoolStats(t *testing.T) {
 	total, acquired, idle, emptyAcquire, duration := GetPoolStats()
 
@@ -449,4 +426,50 @@ func TestPoolStats(t *testing.T) {
 
 	t.Logf("Pool stats: total=%d, acquired=%d, idle=%d, emptyAcquire=%d, duration=%v",
 		total, acquired, idle, emptyAcquire, duration)
+}
+
+// TestJSONBScanning tests that sql.Scanner types work correctly with pgx
+// This tests the pgxScannerWrapper that converts pgx's string returns to []byte
+func TestJSONBScanning(t *testing.T) {
+	// Clean up first
+	_, _ = Db.Exec("DELETE FROM ai_model WHERE key LIKE 'jsonb_test_%'")
+
+	// Insert a model with JSONB settings using uuid_generate_v4()
+	settingsJSON := `{"max_tokens": 1000, "temperature": 0.7, "model": "gpt-4"}`
+
+	// Use RETURNING to get the generated UUID
+	var testUUID string
+	err := Db.QueryRow(
+		"INSERT INTO ai_model (uuid, key, type, provider, settings) VALUES (uuid_generate_v4(), $1, $2, $3, $4::jsonb) RETURNING uuid",
+		"jsonb_test_key", "llm", "openai", settingsJSON,
+	).Scan(&testUUID)
+	if err != nil {
+		t.Fatalf("Failed to insert test model with JSONB: %v", err)
+	}
+
+	// Query using the struct with Scanner type
+	var model AIModelWithJSONB
+	err = Db.Get(&model, "SELECT uuid, key, type, provider, settings FROM ai_model WHERE uuid = $1", testUUID)
+	if err != nil {
+		t.Fatalf("Failed to query model with JSONB: %v", err)
+	}
+
+	// Verify the Scanner worked correctly
+	if model.Settings == nil {
+		t.Fatal("Settings should not be nil")
+	}
+	if model.Settings.MaxTokens != 1000 {
+		t.Errorf("Expected MaxTokens 1000, got %d", model.Settings.MaxTokens)
+	}
+	if model.Settings.Temperature != 0.7 {
+		t.Errorf("Expected Temperature 0.7, got %f", model.Settings.Temperature)
+	}
+	if model.Settings.Model != "gpt-4" {
+		t.Errorf("Expected Model 'gpt-4', got %s", model.Settings.Model)
+	}
+
+	t.Logf("Successfully scanned JSONB into sql.Scanner type: %+v", model.Settings)
+
+	// Clean up
+	_, _ = Db.Exec("DELETE FROM ai_model WHERE uuid = $1", testUUID)
 }

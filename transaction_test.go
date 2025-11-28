@@ -3,6 +3,7 @@ package fsql
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -370,5 +371,168 @@ func TestReadOnlyTransaction(t *testing.T) {
 
 	if err == nil {
 		t.Error("Expected error from write in read-only transaction, got nil")
+	}
+}
+
+// TestTransactionQueriesAndGetSelect tests Query, Get, Select operations in transaction
+func TestTransactionQueriesAndGetSelect(t *testing.T) {
+	cleanDatabase(t)
+	ctx := context.Background()
+
+	// Insert test data
+	for i := 1; i <= 3; i++ {
+		_, err := DB.Exec(ctx, "INSERT INTO realm (uuid, name) VALUES ($1, $2)",
+			uuid.New().String(), fmt.Sprintf("Realm %d", i))
+		if err != nil {
+			t.Fatalf("Failed to insert test data: %v", err)
+		}
+	}
+
+	// Start a transaction
+	tx, err := BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+
+	// Test tx.Query
+	rows, err := tx.Query("SELECT uuid, name FROM realm ORDER BY name")
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("tx.Query failed: %v", err)
+	}
+
+	// Count rows
+	rowCount := 0
+	for rows.Next() {
+		rowCount++
+	}
+	rows.Close()
+
+	if rowCount != 3 {
+		tx.Rollback()
+		t.Fatalf("Expected 3 rows, got %d", rowCount)
+	}
+
+	// Test tx.Get
+	var realm Realm
+	err = tx.Get(&realm, "SELECT uuid, name FROM realm WHERE name = $1", "Realm 1")
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("tx.Get failed: %v", err)
+	}
+
+	if realm.Name != "Realm 1" {
+		tx.Rollback()
+		t.Fatalf("Expected name 'Realm 1', got '%s'", realm.Name)
+	}
+
+	// Test tx.Select
+	var realms []Realm
+	err = tx.Select(&realms, "SELECT uuid, name FROM realm ORDER BY name")
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("tx.Select failed: %v", err)
+	}
+
+	if len(realms) != 3 {
+		tx.Rollback()
+		t.Fatalf("Expected 3 realms, got %d", len(realms))
+	}
+
+	// Commit
+	err = tx.Commit()
+	if err != nil {
+		t.Fatalf("Failed to commit transaction: %v", err)
+	}
+}
+
+// TestBatchOperationsWithTx tests batch operations within a transaction
+func TestBatchOperationsWithTx(t *testing.T) {
+	cleanDatabase(t)
+	ctx := context.Background()
+
+	// Test batch insert within transaction
+	err := WithTx(ctx, func(ctx context.Context, tx *Tx) error {
+		// Create batch executor
+		batch := NewBatchInsert("realm", []string{"uuid", "name"}, 5)
+
+		// Add records
+		for i := 1; i <= 12; i++ {
+			err := batch.Add(map[string]interface{}{
+				"uuid": uuid.New().String(),
+				"name": fmt.Sprintf("batch-realm-%d", i),
+			})
+			if err != nil {
+				return fmt.Errorf("failed to add object to batch: %w", err)
+			}
+		}
+
+		// Flush remaining records within the transaction
+		return batch.FlushWithTx(tx)
+	})
+
+	if err != nil {
+		t.Fatalf("Batch transaction failed: %v", err)
+	}
+
+	// Verify records were inserted
+	var count int
+	row := DB.QueryRow(ctx, "SELECT COUNT(*) FROM realm")
+	err = row.Scan(&count)
+	if err != nil {
+		t.Fatalf("Failed to count records: %v", err)
+	}
+
+	if count != 12 {
+		t.Errorf("Expected 12 records, got %d", count)
+	}
+}
+
+// TestBatchUpdateWithTx tests batch update within a transaction
+func TestBatchUpdateWithTx(t *testing.T) {
+	cleanDatabase(t)
+	ctx := context.Background()
+
+	// Insert initial data
+	uuids := make([]string, 5)
+	for i := 0; i < 5; i++ {
+		uuids[i] = uuid.New().String()
+		_, err := DB.Exec(ctx, "INSERT INTO realm (uuid, name) VALUES ($1, $2)",
+			uuids[i], fmt.Sprintf("Original %d", i))
+		if err != nil {
+			t.Fatalf("Failed to insert test data: %v", err)
+		}
+	}
+
+	// Test batch update within transaction
+	err := WithTx(ctx, func(ctx context.Context, tx *Tx) error {
+		batch := NewBatchUpdate("realm", []string{"name"}, "uuid", 3)
+
+		for i, id := range uuids {
+			err := batch.Add(map[string]interface{}{
+				"name": fmt.Sprintf("Updated %d", i),
+			}, id)
+			if err != nil {
+				return fmt.Errorf("failed to add update to batch: %w", err)
+			}
+		}
+
+		return batch.FlushWithTx(tx)
+	})
+
+	if err != nil {
+		t.Fatalf("Batch update transaction failed: %v", err)
+	}
+
+	// Verify updates
+	var name string
+	row := DB.QueryRow(ctx, "SELECT name FROM realm WHERE uuid = $1", uuids[0])
+	err = row.Scan(&name)
+	if err != nil {
+		t.Fatalf("Failed to fetch realm: %v", err)
+	}
+
+	if name != "Updated 0" {
+		t.Errorf("Expected name 'Updated 0', got '%s'", name)
 	}
 }
