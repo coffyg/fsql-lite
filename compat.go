@@ -115,8 +115,9 @@ func SetLogger(l *zerolog.Logger) {
 
 // DBConfig mirrors the original fsql config structure
 type DBConfig struct {
-	MaxConnections int
-	MinConnections int
+	MaxConnections           int
+	MinConnections           int
+	IdleInTransactionTimeout time.Duration // If set, kills connections idle in transaction for this long
 }
 
 // DefaultConfig provides reasonable production defaults
@@ -133,6 +134,9 @@ func InitDB(database string, config ...DBConfig) {
 		cfg = config[0]
 		DefaultConfig = cfg
 	}
+
+	// Set idle_in_transaction timeout before pool creation
+	idleInTxTimeout = cfg.IdleInTransactionTimeout
 
 	_, err := InitDBWithPool(database, cfg.MaxConnections, cfg.MinConnections)
 	if err != nil {

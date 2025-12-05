@@ -17,6 +17,9 @@ var (
 	DbInitialised bool = false
 )
 
+// idleInTxTimeout is set by InitDB and used by InitDBWithPool
+var idleInTxTimeout time.Duration
+
 // InitDBWithPool initializes the global database pool with explicit pool settings
 func InitDBWithPool(databaseURL string, maxCon int, minCon int) (*pgxpool.Pool, error) {
 	poolConfig, err := pgxpool.ParseConfig(databaseURL)
@@ -31,6 +34,14 @@ func InitDBWithPool(databaseURL string, maxCon int, minCon int) (*pgxpool.Pool, 
 	// Use simple protocol - no prepared statements (MUST be set BEFORE creating pool)
 	poolConfig.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 	poolConfig.ConnConfig.StatementCacheCapacity = 0
+
+	// Set idle_in_transaction_session_timeout on each new connection if configured
+	if idleInTxTimeout > 0 {
+		poolConfig.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+			_, err := conn.Exec(ctx, fmt.Sprintf("SET idle_in_transaction_session_timeout = '%dms'", idleInTxTimeout.Milliseconds()))
+			return err
+		}
+	}
 
 	DB, err = pgxpool.NewWithConfig(context.Background(), poolConfig)
 	if err != nil {
