@@ -43,7 +43,8 @@ var (
 )
 
 // Global mapper using "db" tag (same as sqlx)
-var mapper = reflectx.NewMapperFunc("db", func(s string) string { return s })
+// Uses strings.ToLower so field "UUID" matches column "uuid"
+var mapper = reflectx.NewMapperFunc("db", strings.ToLower)
 
 // getColumns extracts column names from pgx FieldDescriptions
 func getColumns(rows pgx.Rows) []string {

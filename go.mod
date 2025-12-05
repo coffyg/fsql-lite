@@ -6,6 +6,7 @@ require github.com/jackc/pgx/v5 v5.7.6
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/coffyg/octypes v0.0.7 // indirect
 	github.com/coffyg/utils v0.0.36 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/google/uuid v1.6.0 // indirect
